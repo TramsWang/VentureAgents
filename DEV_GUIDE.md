@@ -27,8 +27,6 @@
 ```text
 Agents
     |
-MCP Layer
-    |
 Tools Layer
     |
 Schema Layer
