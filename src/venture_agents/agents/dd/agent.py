@@ -9,6 +9,7 @@ from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 from venture_agents.agents.base import BaseAgent
+from venture_agents.schemas.enums import Language
 from venture_agents.utils.config import get_openai_api_key, get_settings
 from venture_agents.utils.log import setup_logger
 
@@ -18,30 +19,34 @@ if TYPE_CHECKING:
 
     from venture_agents.agents.dd.sections._base import Section
     from venture_agents.schemas.config import ProjectSettings
-    from venture_agents.schemas.enums import Language
 
 
 class DDAgent(BaseAgent):
-    """尽职调查报告生成 Agent"""
+    """尽职调查报告生成 Agent
 
-    # name = "dd_agent"
-    # description = "Mining Due Diligence Report Generation Agent"
+    Attributes:
+        company: 目标公司名称
+        language: 报告语言
+        company_intro_file: 公司介绍（PDF）文件路径
+        company_financial_statement: 公司财务状况统计信息（Excel）文件路径
+    """
+
+    name = "dd_agent"
+    description = "Due Diligence Report Generation Agent for Venture Capital"
 
     def __init__(
         self,
         company: str,
-        mine: str,
-        language: Language,
-        user_upload_dir: str | None = None,
-        use_dynamodb: bool = True,
+        language: Language = Language.Chinese,
+        company_intro_file: str | None = None,
+        company_financial_statement: str | None = None,
     ) -> None:
         super().__init__()
 
         self._company = company
-        self._mine = mine
         self._language = language
-        self._user_upload_dir = user_upload_dir
-        self._use_dynamodb = use_dynamodb
+        self._company_intro_file = company_intro_file
+        self._company_financial_statement = company_financial_statement
 
         self._settings: ProjectSettings = get_settings()
         self._logger = setup_logger("DDAgent", "DDAgent.log", self._settings.agents.dd.log_level)
@@ -52,6 +57,7 @@ class DDAgent(BaseAgent):
 
         self._llm_model = self._settings.llm.chat.model
         self._llm_temperature = self._settings.llm.chat.temperature
+        self._llm_http_client, self._llm_client = self._create_llm_client()
 
     def run(self, **kwargs: Any) -> Any:  # noqa: ANN401
         """同步运行接口
@@ -60,7 +66,46 @@ class DDAgent(BaseAgent):
         RAG Engine 在 asyncio.run() 之前初始化，因为其内部包含同步的
         asyncio.run() 调用（下载报告），不能嵌套在已运行的 event loop 中。
         """
-        return asyncio.run(self.generate_report(report_dir=kwargs.get("report_dir", "reports")))
+
+        async def _run() -> tuple[Path, list[str]]:
+            try:
+                return await self.generate_report(report_dir=kwargs.get("report_dir", "reports"))
+            finally:
+                await self.aclose()
+
+        return asyncio.run(_run())
+
+    def _create_llm_client(self) -> tuple[Any, Any]:
+        """创建可复用的 OpenAI Responses 客户端。"""
+        import httpx
+        from openai import AsyncOpenAI
+
+        openai_settings = self._settings.llm.openai
+        timeout = httpx.Timeout(openai_settings.timeout_seconds, read=openai_settings.read_timeout_seconds)
+        http_client = httpx.AsyncClient(proxy=openai_settings.proxy, timeout=timeout)
+        client_kwargs: dict[str, Any] = {
+            "api_key": get_openai_api_key(),
+            "http_client": http_client,
+            "max_retries": openai_settings.max_retries,
+        }
+        if openai_settings.base_url is not None:
+            client_kwargs["base_url"] = openai_settings.base_url
+        if openai_settings.organization is not None:
+            client_kwargs["organization"] = openai_settings.organization
+        if openai_settings.project is not None:
+            client_kwargs["project"] = openai_settings.project
+
+        return http_client, AsyncOpenAI(**client_kwargs)
+
+    async def aclose(self) -> None:
+        """关闭 DDAgent 持有的异步 HTTP 连接。"""
+        await self._llm_http_client.aclose()
+
+    async def __aenter__(self) -> DDAgent:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        await self.aclose()
 
     # ------------------------------------------------------------------
     # 编排主流程
@@ -354,38 +399,24 @@ class DDAgent(BaseAgent):
     # LLM 调用（已实现）
     # ------------------------------------------------------------------
 
-    async def _ainvoke_llm(self, msgs: list[dict[str, str]]) -> str:
-        """调用 LLM 并返回文本内容"""
-        import httpx
-        from openai import AsyncOpenAI
-
-        openai_settings = self._settings.llm.openai
-        timeout = httpx.Timeout(openai_settings.timeout_seconds, read=openai_settings.read_timeout_seconds)
-        client_kwargs: dict[str, Any] = {
-            "api_key": get_openai_api_key(),
-            "max_retries": openai_settings.max_retries,
+    async def _ainvoke_llm(self, system_prompt: str, user_prompt: str) -> str:
+        """使用 OpenAI Responses API 调用 LLM 并返回文本内容。"""
+        request_kwargs: dict[str, Any] = {
+            "model": self._llm_model,
+            "temperature": self._llm_temperature,
+            "instructions": system_prompt,
+            "input": user_prompt,
+            "tools": [{"type": "web_search"}],
         }
-        if openai_settings.base_url is not None:
-            client_kwargs["base_url"] = openai_settings.base_url
-        if openai_settings.organization is not None:
-            client_kwargs["organization"] = openai_settings.organization
+        if self._settings.llm.chat.max_tokens is not None:
+            request_kwargs["max_output_tokens"] = self._settings.llm.chat.max_tokens
 
-        async with httpx.AsyncClient(proxy=openai_settings.proxy, timeout=timeout) as http_client:
-            client = AsyncOpenAI(http_client=http_client, **client_kwargs)
-            request_kwargs: dict[str, Any] = {
-                "model": self._llm_model,
-                "temperature": self._llm_temperature,
-                "messages": msgs,
-            }
-            if self._settings.llm.chat.max_tokens is not None:
-                request_kwargs["max_tokens"] = self._settings.llm.chat.max_tokens
+        resp = await self._llm_client.responses.create(**request_kwargs)
 
-            resp = await client.chat.completions.create(**request_kwargs)
-
-        content = resp.choices[0].message.content
+        content = getattr(resp, "output_text", None)
         if content is None:
             return ""
-        return content.strip()
+        return str(content).strip()
 
     def _strip_inline_citations(self, text: str) -> str:
         """移除行内引用标记（如 [12] 或 [1, 2, 24]）"""

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from venture_agents.utils.config import ConfigError, get_openai_api_key, load_config, load_settings, reload_settings
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _clear_config_env(monkeypatch: pytest.MonkeyPatch) -> None:

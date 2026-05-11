@@ -118,4 +118,3 @@ class ProjectSettings(ConfigBaseModel):
 
     llm: LLMSettings = Field(default_factory=LLMSettings)
     agents: AgentsSettings = Field(default_factory=AgentsSettings)
-
