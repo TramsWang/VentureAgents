@@ -1,0 +1,29 @@
+# VentureAgents 项目配置示例。
+# 建议复制为 config.yaml，并通过 OPENAI_API_KEY 环境变量提供真实密钥。
+
+llm:
+  default_provider: openai
+  openai:
+    api_key: null
+    base_url: null
+    organization: null
+    project: null
+    proxy: null
+    timeout_seconds: 60
+    read_timeout_seconds: 600
+    max_retries: 2
+  chat:
+    model: gpt-4o
+    temperature: 0.3
+    max_tokens: null
+  search:
+    model: gpt-4o-search-preview
+    max_results: 5
+    add_summary: true
+    max_chars: 8000
+    use_cache: true
+
+agents:
+  dd:
+    async_semaphore: 5
+    log_level: info

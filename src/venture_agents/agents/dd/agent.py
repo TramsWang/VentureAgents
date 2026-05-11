@@ -9,12 +9,15 @@ from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 from venture_agents.agents.base import BaseAgent
+from venture_agents.utils.config import get_openai_api_key, get_settings
+from venture_agents.utils.log import setup_logger
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
     from venture_agents.agents.dd.sections._base import Section
+    from venture_agents.schemas.config import ProjectSettings
     from venture_agents.schemas.enums import Language
 
 
@@ -24,18 +27,6 @@ class DDAgent(BaseAgent):
     # name = "dd_agent"
     # description = "Mining Due Diligence Report Generation Agent"
 
-    # CONF_SECTION_NAME: Final[str] = "DDAgent.TemplatedReactAgent"
-    # CONFIG_LLM_MODEL: Final[str] = "llm_model"
-    # DEFAULT_LLM_MODEL: Final[str] = "gpt-4o"
-    # CONFIG_LLM_PROXY: Final[str] = "llm_proxy"
-    # DEFAULT_LLM_PROXY: Final[str] = ""
-    # CONFIG_LLM_TEMPERATURE: Final[str] = "llm_temperature"
-    # DEFAULT_LLM_TEMPERATURE: Final[str] = "0.3"
-    # CONFIG_ASYNC_SEMAPHORE: Final[str] = "async_semaphore"
-    # DEFAULT_ASYNC_SEMAPHORE: Final[str] = "5"
-    # CONFIG_LOG_LEVEL: Final[str] = "log_level"
-    # DEFAULT_LOG_LEVEL: Final[str] = "info"
-
     def __init__(
         self,
         company: str,
@@ -44,41 +35,23 @@ class DDAgent(BaseAgent):
         user_upload_dir: str | None = None,
         use_dynamodb: bool = True,
     ) -> None:
-        self._company = company
-    #     self._mine = mine
-        self._language = language
-    #     self._use_dynamodb = use_dynamodb
-    #     self._proj_name = f"{company}-{mine}-({language.name})-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    #     self._config = load_config(DDAgent.CONF_SECTION_NAME)
+        super().__init__()
 
-    #     # 设置日志
-    #     log_level = logging.INFO
-    #     config_log_level = self._config.get(DDAgent.CONFIG_LOG_LEVEL, DDAgent.DEFAULT_LOG_LEVEL)
-    #     if config_log_level == "debug":
-    #         log_level = logging.DEBUG
-    #     elif config_log_level == "warn":
-    #         log_level = logging.WARNING
-    #     elif config_log_level == "error":
-    #         log_level = logging.ERROR
-    #     self._logger = setup_logger("DDAgent", "DDAgent.log", log_level)
+        self._company = company
+        self._mine = mine
+        self._language = language
+        self._user_upload_dir = user_upload_dir
+        self._use_dynamodb = use_dynamodb
+
+        self._settings: ProjectSettings = get_settings()
+        self._logger = setup_logger("DDAgent", "DDAgent.log", self._settings.agents.dd.log_level)
 
         self._async_semaphore = asyncio.Semaphore(
-            # int(self._config.get(DDAgent.CONFIG_ASYNC_SEMAPHORE, DDAgent.DEFAULT_ASYNC_SEMAPHORE)),
-            5
+            self._settings.agents.dd.async_semaphore,
         )
 
-        # # 创建 LLM Client
-        # self._logger.info("Creating LLM Client...")
-        # llm_proxy = self._config.get(DDAgent.CONFIG_LLM_PROXY, DDAgent.DEFAULT_LLM_PROXY)
-        # self._llm_model = self._config.get(DDAgent.CONFIG_LLM_MODEL, DDAgent.DEFAULT_LLM_MODEL)
-        # self._llm_temperature = float(self._config.get(DDAgent.CONFIG_LLM_TEMPERATURE, DDAgent.DEFAULT_LLM_TEMPERATURE))
-
-        # timeout = httpx.Timeout(60.0, read=600.0)
-        # http_client = (
-        #     httpx.AsyncClient(proxy=llm_proxy, timeout=timeout) if llm_proxy else httpx.AsyncClient(timeout=timeout)
-        # )
-        # self._llm = AsyncOpenAI(api_key=get_openai_api_key(), http_client=http_client)
-        self._llm = None
+        self._llm_model = self._settings.llm.chat.model
+        self._llm_temperature = self._settings.llm.chat.temperature
 
     def run(self, **kwargs: Any) -> Any:  # noqa: ANN401
         """同步运行接口
@@ -383,16 +356,36 @@ class DDAgent(BaseAgent):
 
     async def _ainvoke_llm(self, msgs: list[dict[str, str]]) -> str:
         """调用 LLM 并返回文本内容"""
-        # resp = await self._llm.chat.completions.create(
-        #     model=self._llm_model,
-        #     temperature=self._llm_temperature,
-        #     messages=msgs,  # type: ignore[arg-type]
-        # )
-        # content = resp.choices[0].message.content
-        # if content is None:
-        #     return ""
-        # return content.strip()
-        return ""
+        import httpx
+        from openai import AsyncOpenAI
+
+        openai_settings = self._settings.llm.openai
+        timeout = httpx.Timeout(openai_settings.timeout_seconds, read=openai_settings.read_timeout_seconds)
+        client_kwargs: dict[str, Any] = {
+            "api_key": get_openai_api_key(),
+            "max_retries": openai_settings.max_retries,
+        }
+        if openai_settings.base_url is not None:
+            client_kwargs["base_url"] = openai_settings.base_url
+        if openai_settings.organization is not None:
+            client_kwargs["organization"] = openai_settings.organization
+
+        async with httpx.AsyncClient(proxy=openai_settings.proxy, timeout=timeout) as http_client:
+            client = AsyncOpenAI(http_client=http_client, **client_kwargs)
+            request_kwargs: dict[str, Any] = {
+                "model": self._llm_model,
+                "temperature": self._llm_temperature,
+                "messages": msgs,
+            }
+            if self._settings.llm.chat.max_tokens is not None:
+                request_kwargs["max_tokens"] = self._settings.llm.chat.max_tokens
+
+            resp = await client.chat.completions.create(**request_kwargs)
+
+        content = resp.choices[0].message.content
+        if content is None:
+            return ""
+        return content.strip()
 
     def _strip_inline_citations(self, text: str) -> str:
         """移除行内引用标记（如 [12] 或 [1, 2, 24]）"""

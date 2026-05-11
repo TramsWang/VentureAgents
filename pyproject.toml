@@ -9,7 +9,10 @@ description = "提供辅助风投工作的大模型智能体"
 readme = "README.md"
 requires-python = ">=3.12"
 
-dependencies = []
+dependencies = [
+    "pydantic>=2.7,<3",
+    "PyYAML>=6.0,<7",
+]
 
 [project.optional-dependencies]
 dd = [

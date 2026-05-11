@@ -118,8 +118,27 @@ pip install "venture_agents-x.y.z-py3-none-any.whl[dd]"
 - 项目根目录的`pyproject.toml`文件规定了当前项目的规范化配置。
 - 根目录`.pre-commit-config.yaml`文件规定了commit和push前的检查项
 - `.github/workflows/ci.yml`文件规定了GitHub CI流程
+- 运行时项目配置使用`config.yaml`（本地文件不提交），结构定义在`src/venture_agents/schemas/config.py`，加载入口为`venture_agents.utils.config.get_settings()`。
 
-### 4.1 Pre-commit配置
+### 4.1 运行时配置
+
+可参考根目录`config.example.yaml`创建本地`config.yaml`。配置加载完成后会返回嵌套的Pydantic对象：
+
+```python
+from venture_agents.utils.config import get_settings
+
+settings = get_settings()
+model = settings.llm.chat.model
+proxy = settings.llm.openai.proxy
+```
+
+敏感信息推荐使用环境变量：
+
+```bash
+export OPENAI_API_KEY="sk-..."
+```
+
+### 4.2 Pre-commit配置
 配置文件参见根目录`.pre-commit-config.yaml`
 
 安装pre-commit：

@@ -158,6 +158,12 @@ ENV/
 env.bak/
 venv.bak/
 
+# Local project configuration. Keep config.example.yaml committed.
+config.yaml
+config.yml
+configs/config.yaml
+configs/config.yml
+
 # Spyder project settings
 .spyderproject
 .spyproject

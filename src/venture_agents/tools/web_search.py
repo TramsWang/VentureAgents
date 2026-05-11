@@ -19,9 +19,9 @@ from pathlib import Path
 from typing import Any, cast
 
 import httpx
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAIError
 
-from venture_agents.utils.config import get_openai_api_key, load_config
+from venture_agents.utils.config import ConfigError, get_openai_api_key, get_settings
 from venture_agents.utils.log import setup_logger
 
 
@@ -81,42 +81,42 @@ def _estimate_cost_from_usage(usage: Any) -> float:  # noqa: ANN401
 
 async def perform_search(
     query: str,
-    max_results: int = 5,
+    max_results: int | None = None,
     *,
-    add_summary: bool = True,
-    max_chars: int = 8000,
-    use_cache: bool = True,
+    add_summary: bool | None = None,
+    max_chars: int | None = None,
+    use_cache: bool | None = None,
     verbose: bool = True,
 ) -> tuple[str, float]:
     """执行一次通用在线搜索（GPT-4o-search-preview）
 
     Args:
         query: 搜索查询
-        max_results: 最大结果数
-        add_summary: 是否添加摘要
-        max_chars: 最大字符数
-        use_cache: 是否使用缓存
+        max_results: 最大结果数；为 None 时使用项目配置
+        add_summary: 是否添加摘要；为 None 时使用项目配置
+        max_chars: 最大字符数；为 None 时使用项目配置
+        use_cache: 是否使用缓存；为 None 时使用项目配置
         verbose: 是否显示详细信息
 
     Returns:
         tuple[str, float]: (Markdown 文本, 估算费用)
     """
-    cache = _load_cache() if use_cache else {}
-    if use_cache and query in cache:
+    settings = get_settings()
+    openai_settings = settings.llm.openai
+    search_settings = settings.llm.search
+    effective_max_results = max_results if max_results is not None else search_settings.max_results
+    effective_add_summary = add_summary if add_summary is not None else search_settings.add_summary
+    effective_max_chars = max_chars if max_chars is not None else search_settings.max_chars
+    effective_use_cache = use_cache if use_cache is not None else search_settings.use_cache
+
+    cache = _load_cache() if effective_use_cache else {}
+    if effective_use_cache and query in cache:
         if verbose:
             logger.info("Cache hit: %s", query)
         item = cache[query]
-        return item["text"], float(item.get("cost", 0.0))
+        return str(item["text"]), float(item.get("cost", 0.0))
 
-    config = load_config("DDAgent.Searcher")
-    llm_proxy: str = config.get("llm_proxy", "")
-    http_client = httpx.AsyncClient(proxy=llm_proxy) if llm_proxy else httpx.AsyncClient()
-
-    client = AsyncOpenAI(
-        api_key=get_openai_api_key(),
-        http_client=http_client,
-    )
-    model = "gpt-4o-search-preview"
+    timeout = httpx.Timeout(openai_settings.timeout_seconds, read=openai_settings.read_timeout_seconds)
 
     system_prompt = (
         "You are a research assistant supplementing mining due diligence sections. "
@@ -143,18 +143,30 @@ Instructions:
 - Always include the URL in-line as a reference.
 - Output **Markdown** only.
 
-Generate up to {max_results} items.
+Generate up to {effective_max_results} items.
 """
 
     started = time.time()
     try:
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
+        async with httpx.AsyncClient(proxy=openai_settings.proxy, timeout=timeout) as http_client:
+            client_kwargs: dict[str, Any] = {
+                "api_key": get_openai_api_key(),
+                "http_client": http_client,
+                "max_retries": openai_settings.max_retries,
+            }
+            if openai_settings.base_url is not None:
+                client_kwargs["base_url"] = openai_settings.base_url
+            if openai_settings.organization is not None:
+                client_kwargs["organization"] = openai_settings.organization
+
+            client = AsyncOpenAI(**client_kwargs)
+            resp = await client.chat.completions.create(
+                model=search_settings.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
         content = resp.choices[0].message.content
         if content is None:
             text = "⚠️ No content returned from search."
@@ -169,14 +181,14 @@ Generate up to {max_results} items.
             text = "⚠️ No references (URLs) returned.\n\n" + text
 
         text = _dedent_md(text)
-        text = _truncate(text, max_chars)
-        if add_summary:
+        text = _truncate(text, effective_max_chars)
+        if effective_add_summary:
             text = _append_summary(text)
 
-        if use_cache:
+        if effective_use_cache:
             cache[query] = {"text": text, "cost": cost, "ts": time.time()}
             _save_cache(cache)
-    except Exception as e:
+    except (ConfigError, OpenAIError, httpx.HTTPError, OSError, RuntimeError, ValueError) as e:
         err = f"⚠️ Search failed: {e}"
         if verbose:
             logger.exception("Search failed")
@@ -188,38 +200,43 @@ Generate up to {max_results} items.
 async def perform_all_searches(
     queries: list[str],
     *,
-    add_summary: bool = True,
-    max_chars: int = 8000,
-    use_cache: bool = True,
+    add_summary: bool | None = None,
+    max_chars: int | None = None,
+    use_cache: bool | None = None,
     verbose: bool = True,
 ) -> tuple[dict[str, str], float]:
     """并发执行多次搜索
 
     Args:
         queries: 搜索查询列表
-        add_summary: 是否添加摘要
-        max_chars: 最大字符数
-        use_cache: 是否使用缓存
+        add_summary: 是否添加摘要；为 None 时使用项目配置
+        max_chars: 最大字符数；为 None 时使用项目配置
+        use_cache: 是否使用缓存；为 None 时使用项目配置
         verbose: 是否显示详细信息
 
     Returns:
         tuple[dict[str, str], float]: (查询到结果的映射, 累计费用)
     """
-    cache = _load_cache() if use_cache else {}
+    search_settings = get_settings().llm.search
+    effective_add_summary = add_summary if add_summary is not None else search_settings.add_summary
+    effective_max_chars = max_chars if max_chars is not None else search_settings.max_chars
+    effective_use_cache = use_cache if use_cache is not None else search_settings.use_cache
+
+    cache = _load_cache() if effective_use_cache else {}
     total_cost = 0.0
     results: dict[str, str] = {}
 
     async def _run(q: str) -> tuple[str, str, float]:
-        if use_cache and q in cache:
+        if effective_use_cache and q in cache:
             if verbose:
                 logger.info("Cache hit: %s", q)
             item = cache[q]
-            return q, item["text"], float(item.get("cost", 0.0))
+            return q, str(item["text"]), float(item.get("cost", 0.0))
         text, cost = await perform_search(
             q,
-            add_summary=add_summary,
-            max_chars=max_chars,
-            use_cache=use_cache,
+            add_summary=effective_add_summary,
+            max_chars=effective_max_chars,
+            use_cache=effective_use_cache,
             verbose=verbose,
         )
         return q, text, cost
@@ -230,10 +247,10 @@ async def perform_all_searches(
     for q, text, cost in responses:
         results[q] = text
         total_cost += float(cost)
-        if use_cache:
+        if effective_use_cache:
             cache[q] = {"text": text, "cost": cost, "ts": time.time()}
 
-    if use_cache:
+    if effective_use_cache:
         _save_cache(cache)
 
     if verbose:
