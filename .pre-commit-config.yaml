@@ -1,0 +1,30 @@
+repos:
+  - repo: https://github.com/psf/black-pre-commit-mirror
+    rev: 25.12.0
+    hooks:
+      - id: black
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.10
+    hooks:
+      - id: ruff
+        args: [--fix]
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: Mypy
+        entry: mypy . --install-types --non-interactive
+        language: system
+        pass_filenames: false
+
+  # 快速测试检查
+  - repo: local
+    hooks:
+      - id: pytest-fast
+        name: Run Fast Tests
+        entry: pytest tests/unit/ -x --tb=short
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

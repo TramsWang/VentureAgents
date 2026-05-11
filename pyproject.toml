@@ -1,0 +1,222 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "venture_agents"
+version = "0.0.1"
+description = "提供辅助风投工作的大模型智能体"
+readme = "README.md"
+requires-python = ">=3.12"
+
+dependencies = []
+
+[project.optional-dependencies]
+dd = [
+    # LLM
+    "openai>=1.6.1",
+    "httpx>=0.24.0",
+
+    # RAG & Embeddings
+    "sentence-transformers>=2.6.1",
+    "scikit-learn>=1.3.0",
+    "FlagEmbedding>=1.2.0",
+    "numpy==1.26.4",
+
+    # PDF Processing
+    "PyPDF2>=3.0.0",
+    "PyMuPDF==1.26.5",
+]
+
+agents-all = ["venture_agents[dd]"]
+
+dev = [
+    "venture_agents[agents-all]",
+    "black>=25.12,<26",
+    "ruff>=0.14,<1.0",
+    "mypy>=1.19,<2",
+    "pytest>=9.0,<10",
+    "pytest-cov>=7,<8",
+    "pytest-mock>=3.15,<4",
+    "pytest-sugar>=1.1,<2",
+    "pre-commit>=4.5,<5",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+exclude = ["tests*"]
+
+### ========== Black 配置 ==========
+[tool.black]
+line-length = 120  # 团队统一：建议120，符合现代显示器
+target-version = ["py312"]
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.venv
+  | \.git
+  | \.pytest_cache
+  | \.ruff_cache
+  | build
+  | dist
+  | __pycache__
+  | node_modules
+)/
+'''
+skip-string-normalization = true    # 防止引号替换
+
+### ========== Ruff 配置 ==========
+[tool.ruff]
+src = ["src"]
+
+# 检查规则：全面覆盖PEP8、bug发现、性能问题
+lint.select = [
+    "E",   # Pycodestyle错误
+    "F",   # PyFlakes
+    "B",   # Bugbear（常见bug模式）
+    "I",   # Import排序
+    "UP",  # PyUpgrade（现代Python语法）
+    "RUF", # Ruff特定规则
+    "PERF", # 性能
+    "RET", # Return语句
+    "TCH", # Type-checking导入
+    "PTH", # 路径处理
+    "A",   # 易出错的设计
+    "S",   # 安全
+    "BLE", # Blind Except（空异常捕获）
+    "RSE", # Raise语句
+    "ANN", # 类型注解
+    "TRY", # Try/Except最佳实践
+    "EM",  # 错误消息
+    "FIX", # 可修复的问题
+    "T20", # print语句
+]
+
+# 忽略的规则
+lint.ignore = [
+    "E501",     # 行过长（由Black处理）
+    "D",        # 文档字符串（暂不强制）
+    "RUF001",   # 忽略中文全角标点字符串
+    "RUF002",   # 忽略中文全角标点字符串
+    "RUF003",   # 忽略中文全角标点字符串
+]
+
+line-length = 120
+target-version = "py312"
+fix = true
+unsafe-fixes = false
+
+[tool.ruff.format]
+quote-style = "preserve"
+
+[tool.ruff.lint.isort]
+known-first-party = ["venture_agents"]  # 修改为你的项目包名
+lines-after-imports = 2
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**/*.py" = [     # 将测试代码单独放宽
+    "S101",  # assert
+    "ANN",   # 类型注解
+    "T20",   # print
+    "S",     # 安全
+    "TRY",   # except 最佳实践
+    "EM",    # error message
+]
+
+### ========== Mypy 配置 ==========
+[tool.mypy]
+python_version = "3.12"
+mypy_path = ["src"]
+explicit_package_bases = true
+namespace_packages = true
+# 核心检查规则
+warn_return_any = true
+warn_no_return = true
+warn_unused_configs = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+ignore_missing_imports = false
+strict = false
+
+# 排除目录
+exclude = [
+    '^\.venv/',
+    '^venv/',
+    '^build/',
+    '^dist/',
+    '^\.mypy_cache/',
+]
+
+# 测试文件放宽要求
+[[tool.mypy.overrides]]
+module = [
+    "tests.*",
+    "scripts.*",
+]
+disallow_untyped_defs = false
+
+# 对当前项目实际依赖中类型注解不完整的库放宽
+[[tool.mypy.overrides]]
+module = [
+    "FlagEmbedding",
+    "FlagEmbedding.*",          # BGE embedding/reranker
+    "fitz",
+    "fitz.*",                   # PyMuPDF
+    "PyPDF2",
+    "PyPDF2.*",                 # PDF parser
+    "sklearn",
+    "sklearn.*",                # scikit-learn
+    "sentence_transformers",
+    "sentence_transformers.*",  # 句子嵌入模型
+]
+ignore_missing_imports = true
+
+### ========== Pytest 配置 ==========
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+# 运行参数
+addopts = """
+    -v
+    --strict-markers
+    --tb=short
+    --color=yes
+    --cov=venture_agents
+    --cov-report=term-missing:skip-covered
+    --cov-report=html:cov-html
+"""
+
+# 覆盖率配置
+[tool.coverage.run]
+source = ["venture_agents"]
+omit = [
+    "*/tests/*",
+    "*/.venv/*",
+    "*/*.pyi",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+# fail_under = 15 # 目前暂时不要求覆盖率
