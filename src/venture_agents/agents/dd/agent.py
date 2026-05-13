@@ -243,7 +243,7 @@ class DDAgent(BaseAgent):
         1. 自动发现所有 sections
         2. 并行运行 primary phase sections
         3. 合并 references + 组装 article_body
-        4. 并行运行 post phase sections（传入 article_body）
+        4. 并行运行 post phase sections（传入 article_body）并合并其引用
         5. 组装最终报告
 
         Returns:
@@ -284,12 +284,18 @@ class DDAgent(BaseAgent):
         self._logger.info("Phase 1 完成（耗时：%.2fs）", time_article_body - time_start)
 
         # ===== Phase 2: 运行 post sections =====
-        self._logger.info("Phase 2: 生成 %d 个总结性章节...", len(post_sections))
+        self._logger.info("Phase 2: 生成 %d 个后置章节...", len(post_sections))
         post_results: list[tuple[str, list[str]]] = await asyncio.gather(
             *[
                 _run_with_semaphore(s.build(self, article_body=article_body, fixed_references=fixed_references))
                 for s in post_sections
             ],
+        )
+        fixed_paras, post_results, fixed_references = self._merge_post_results_with_references(
+            fixed_paras,
+            fixed_references,
+            post_sections,
+            post_results,
         )
 
         # ===== Phase 3: 最终组装 =====
@@ -371,6 +377,75 @@ class DDAgent(BaseAgent):
             fixed_passages.append(new_passage)
 
         return fixed_passages, global_ref_list
+
+    def _merge_additional_paragraphs_with_references(
+        self,
+        passages: list[str],
+        reference_lists: list[list[str]],
+        existing_references: list[str],
+    ) -> tuple[list[str], list[str]]:
+        """Append local citations from later sections after an existing reference list."""
+        global_ref_list: list[str] = list(existing_references)
+        fixed_passages: list[str] = []
+        current_index: int = len(global_ref_list) + 1
+
+        for passage, refs in zip(passages, reference_lists, strict=True):
+            local_to_global: dict[int, int] = {}
+
+            for match in re.finditer(r"\[\s*(\d+)\s*\]", passage):
+                local_num = int(match.group(1))
+                if local_num not in local_to_global and 1 <= local_num <= len(refs):
+                    local_to_global[local_num] = current_index
+                    global_ref_list.append(refs[local_num - 1])
+                    current_index += 1
+
+            def replace_match(match: re.Match[str]) -> str:
+                num = int(match.group(1))
+                return f"[{local_to_global[num]}]" if num in local_to_global else ""
+
+            fixed_passages.append(re.sub(r"\[\s*(\d+)\s*\]", replace_match, passage))
+
+        return fixed_passages, global_ref_list
+
+    def _merge_post_results_with_references(
+        self,
+        primary_passages: list[str],
+        primary_references: list[str],
+        post_sections: list[Section],
+        post_results: list[tuple[str, list[str]]],
+    ) -> tuple[list[str], list[tuple[str, list[str]]], list[str]]:
+        """Merge references returned by post sections into the final report references."""
+        post_indexes: list[int] = []
+        post_passages: list[str] = []
+        post_reference_lists: list[list[str]] = []
+
+        for idx, (section, (text, refs)) in enumerate(zip(post_sections, post_results, strict=True)):
+            if section.meta.name == "followup":
+                continue
+            post_indexes.append(idx)
+            post_passages.append(text)
+            post_reference_lists.append(refs)
+
+        if not post_indexes:
+            return primary_passages, post_results, primary_references
+
+        fixed_post_passages, combined_references = self._merge_additional_paragraphs_with_references(
+            post_passages,
+            post_reference_lists,
+            primary_references,
+        )
+        all_passages = primary_passages + fixed_post_passages
+        deduped_passages, deduped_references = self._deduplicate_references(all_passages, combined_references)
+
+        primary_count = len(primary_passages)
+        fixed_primary_passages = deduped_passages[:primary_count]
+        fixed_post_passages = deduped_passages[primary_count:]
+
+        updated_post_results = list(post_results)
+        for idx, text in zip(post_indexes, fixed_post_passages, strict=True):
+            updated_post_results[idx] = (text, post_results[idx][1])
+
+        return fixed_primary_passages, updated_post_results, deduped_references
 
     def _deduplicate_references(
         self,
@@ -466,7 +541,7 @@ class DDAgent(BaseAgent):
     ) -> str:
         """最终报告组装
 
-        将 post sections（概述、亮点、风险等）+ primary sections（正文）+ references 组装为完整报告。
+        将 primary sections（正文）+ post sections（后置章节）+ references 组装为完整报告。
         """
         article_title: list[str] = [
             "桌面尽职调查报告",
