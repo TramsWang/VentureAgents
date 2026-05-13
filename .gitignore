@@ -226,3 +226,9 @@ __marimo__/
 
 # VS Code
 .vscode
+
+# logs
+logs
+
+# data used for test
+data

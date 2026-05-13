@@ -62,7 +62,16 @@ class _FakeAsyncOpenAI:
 
 
 class _DummyLogger:
+    def debug(self, *_args: object, **_kwargs: object) -> None:
+        pass
+
+    def info(self, *_args: object, **_kwargs: object) -> None:
+        pass
+
     def warning(self, *_args: object, **_kwargs: object) -> None:
+        pass
+
+    def exception(self, *_args: object, **_kwargs: object) -> None:
         pass
 
 
@@ -84,6 +93,36 @@ def _make_file_usage_agent(response_text: str) -> DDAgent:
 
     agent._ainvoke_llm = _fake_ainvoke_llm
     return cast("DDAgent", agent)
+
+
+def test_dd_agent_reads_supplementary_files_from_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(DDAgent, "_create_llm_client", lambda _self: (object(), object()))
+    supplementary_dir = tmp_path / "supplementary"
+    nested_dir = supplementary_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    (supplementary_dir / "overview.txt").write_text("overview", encoding="utf-8")
+    (nested_dir / "finance.pdf").write_text("finance", encoding="utf-8")
+
+    agent = DDAgent("Example Mining", Language.English, supplementary_files=supplementary_dir)
+
+    assert agent._supplementary_files == sorted(
+        [
+            str(supplementary_dir / "overview.txt"),
+            str(nested_dir / "finance.pdf"),
+        ],
+    )
+
+
+def test_dd_agent_rejects_non_directory_supplementary_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(DDAgent, "_create_llm_client", lambda _self: (object(), object()))
+    file_path = tmp_path / "overview.txt"
+    file_path.write_text("overview", encoding="utf-8")
+
+    with pytest.raises(NotADirectoryError, match="Supplementary files path must be a directory"):
+        DDAgent("Example Mining", Language.English, supplementary_files=file_path)
 
 
 def test_check_file_usage_accepts_json_code_block() -> None:
