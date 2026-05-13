@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
@@ -18,6 +19,11 @@ if TYPE_CHECKING:
 
 logger = setup_logger("DDAgent.sections", console=False)
 
+_REFERENCE_HEADING_RE = re.compile(r"(?im)^[ \t]{0,3}(?:#{1,6}\s*)?(?:references?|参考文献|参考内容)\s*[:：]?\s*$")
+_REFERENCE_ENTRY_RE = re.compile(r"^\s*(?:[-*]\s*)?(?:\[(\d+)\]|(\d+)[.)、])\s*(.*)$")
+_MULTI_CITATION_RE = re.compile(r"\[\s*(\d+(?:\s*[,，]\s*\d+)+)\s*\]")
+_CITATION_RE = re.compile(r"\[\s*(\d+)\s*\]")
+
 
 @dataclass
 class SectionMeta:
@@ -27,13 +33,13 @@ class SectionMeta:
         name: 唯一标识符，如 "geology", "mining", "overview"
         title: 多语言标题列表 [中文, English, Español, Português, العربية]
         phase: 生成阶段
-            - "primary": 第一阶段，可并行生成（章节 4-9 的主体内容）
-            - "post": 第二阶段，依赖 article_body（概述、亮点、风险、缺口、追问）
+            - "primary": 第一阶段，可并行生成的主体章节
+            - "post": 第二阶段，依赖 article_body 的后置章节
         order: 层级编号列表，天然表达章节层级关系，用于排序和推导
             - [4]     → heading_level=2 (##),  parent_order=None
             - [4, 1]  → heading_level=3 (###), parent_order=[4]
             - [4, 1, 1] → heading_level=4 (####), parent_order=[4, 1]
-            - post phase 示例: [1], [2], [3], [100], [110]
+            - post phase 示例: [7], [8], [100], [110]
         depends_on: post phase 中依赖的其他 section names
     """
 
@@ -82,6 +88,88 @@ class Section:
 
     meta: SectionMeta
     build: SectionBuilder
+
+
+def _normalize_citation_clusters(text: str) -> str:
+    """Convert citations like [1, 2] to [1][2] for downstream reference merging."""
+
+    def replace_match(match: re.Match[str]) -> str:
+        numbers = re.findall(r"\d+", match.group(1))
+        return "".join(f"[{number}]" for number in numbers)
+
+    return _MULTI_CITATION_RE.sub(replace_match, text)
+
+
+def parse_references(response: str) -> tuple[str, list[str]]:
+    """Split an LLM section response into body text and local references.
+
+    The DD report assembler expects each section to return body text with local
+    citations and a reference list where local citation ``[n]`` maps to
+    ``references[n - 1]``. This parser removes a trailing References section,
+    extracts entries such as ``[1] ...`` or ``1. ...``, and normalizes local
+    citation numbers if the model emits non-contiguous reference numbering.
+    """
+    text = response.strip()
+    if not text:
+        return "", []
+
+    heading_matches = list(_REFERENCE_HEADING_RE.finditer(text))
+    if not heading_matches:
+        return _normalize_citation_clusters(text), []
+
+    heading_match = heading_matches[-1]
+    body = text[: heading_match.start()].rstrip()
+    reference_block = text[heading_match.end() :].strip()
+
+    entries: list[tuple[int, str]] = []
+    current_number: int | None = None
+    current_lines: list[str] = []
+
+    def flush_current() -> None:
+        nonlocal current_number, current_lines
+        if current_number is None:
+            return
+        reference_text = " ".join(line.strip() for line in current_lines if line.strip()).strip()
+        if reference_text:
+            entries.append((current_number, reference_text))
+        current_number = None
+        current_lines = []
+
+    for line in reference_block.splitlines():
+        entry_match = _REFERENCE_ENTRY_RE.match(line)
+        if entry_match:
+            flush_current()
+            number_text = entry_match.group(1) or entry_match.group(2)
+            current_number = int(number_text)
+            current_lines = [entry_match.group(3)]
+            continue
+        if current_number is not None:
+            current_lines.append(line)
+    flush_current()
+
+    if not entries:
+        logger.warning("No parseable references found in References section.")
+        return _normalize_citation_clusters(body), []
+
+    references_by_number: dict[int, str] = {}
+    for number, reference in entries:
+        references_by_number.setdefault(number, reference)
+
+    old_to_new: dict[int, int] = {}
+    references: list[str] = []
+    for old_number in sorted(references_by_number):
+        old_to_new[old_number] = len(references) + 1
+        references.append(references_by_number[old_number])
+
+    body = _normalize_citation_clusters(body)
+
+    def replace_citation(match: re.Match[str]) -> str:
+        old_number = int(match.group(1))
+        new_number = old_to_new.get(old_number)
+        return f"[{new_number}]" if new_number is not None else ""
+
+    body = _CITATION_RE.sub(replace_citation, body).strip()
+    return body, references
 
 
 # ------------------------------------------------------------------

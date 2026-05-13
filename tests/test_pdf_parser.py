@@ -142,10 +142,7 @@ def test_legacy_pymupdf_fallback_uses_toc_headings(monkeypatch: pytest.MonkeyPat
     markdown = parse_pdf_to_markdown(pdf_path)
 
     assert markdown == (
-        "# Executive Summary\n\n"
-        "This is the first paragraph.\n\n"
-        "## Market\n\n"
-        "The market is large."
+        "# Executive Summary\n\n" "This is the first paragraph.\n\n" "## Market\n\n" "The market is large."
     )
 
 

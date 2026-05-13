@@ -105,12 +105,7 @@ def _is_bold_span(span: dict[str, object]) -> bool:
     """
     font = str(span.get("font", "")).casefold()
     flags = span.get("flags", 0)
-    return (
-        "bold" in font
-        or "black" in font
-        or "semibold" in font
-        or (isinstance(flags, int) and bool(flags & 16))
-    )
+    return "bold" in font or "black" in font or "semibold" in font or (isinstance(flags, int) and bool(flags & 16))
 
 
 def _span_size(span: dict[str, object]) -> float:
@@ -243,7 +238,9 @@ def _heading_size_levels(lines: Iterable[PdfTextLine], body_size: float) -> dict
     if body_size <= 0:
         return {}
 
-    heading_sizes = sorted({round(line.font_size, 1) for line in lines if line.font_size >= body_size + 1.5}, reverse=True)
+    heading_sizes = sorted(
+        {round(line.font_size, 1) for line in lines if line.font_size >= body_size + 1.5}, reverse=True
+    )
     return {font_size: min(index + 1, 6) for index, font_size in enumerate(heading_sizes)}
 
 
@@ -597,10 +594,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if output:
         sys.stdout.write(output + "\n")
     return 0
-
-
-# 兼容旧命名风格
-parsePdfToMarkdown = parse_pdf_to_markdown
 
 
 if __name__ == "__main__":

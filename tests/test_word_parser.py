@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from docx import Document
@@ -26,7 +26,7 @@ def test_parse_word_to_markdown_preserves_headings_and_lists(tmp_path: Path) -> 
     document.add_paragraph("Interview customers", style="List Number")
 
     docx_path = tmp_path / "memo.docx"
-    document.save(docx_path)
+    document.save(str(docx_path))
 
     markdown = parse_word_to_markdown(docx_path)
 
@@ -49,7 +49,7 @@ def test_parse_word_to_markdown_preserves_nested_list_indentation(tmp_path: Path
     document.add_paragraph("Second parent", style="List Bullet")
 
     docx_path = tmp_path / "nested.docx"
-    document.save(docx_path)
+    document.save(str(docx_path))
 
     markdown = parse_word_to_markdown(docx_path)
 
@@ -67,17 +67,11 @@ def test_parse_word_to_markdown_renders_tables_in_body_order(tmp_path: Path) -> 
     document.add_paragraph("After table.")
 
     docx_path = tmp_path / "table.docx"
-    document.save(docx_path)
+    document.save(str(docx_path))
 
     markdown = parse_word_to_markdown(docx_path)
 
-    assert markdown == (
-        "# Metrics\n\n"
-        "| Name | Note |\n"
-        "| --- | --- |\n"
-        "| Revenue | A\\|B |\n\n"
-        "After table."
-    )
+    assert markdown == ("# Metrics\n\n" "| Name | Note |\n" "| --- | --- |\n" "| Revenue | A\\|B |\n\n" "After table.")
 
 
 def test_parse_word_to_markdown_rejects_non_docx_files(tmp_path: Path) -> None:
@@ -102,7 +96,7 @@ def test_numbering_definitions_allows_documents_without_numbering_part() -> None
     class DocumentWithoutNumberingPart:
         part = Part()
 
-    NumberingDefinitions(DocumentWithoutNumberingPart())
+    NumberingDefinitions(cast("Any", DocumentWithoutNumberingPart()))
 
 
 def test_word_parser_cli_writes_markdown_to_output_file(tmp_path: Path) -> None:
@@ -112,7 +106,7 @@ def test_word_parser_cli_writes_markdown_to_output_file(tmp_path: Path) -> None:
 
     docx_path = tmp_path / "cli.docx"
     output_path = tmp_path / "output.md"
-    document.save(docx_path)
+    document.save(str(docx_path))
 
     result = subprocess.run(
         [
